@@ -126,7 +126,7 @@ def get_best_gb(X_train, y_train):
         return gb
 
 
-# ============== Carregamento e Pré-processamento ==============
+# Carregamento e Pré-processamento
 def load_and_preprocess_data(filepath):
     global ORIGINAL_IBC_BR
     print("CARREGAMENTO E PRÉ-PROCESSAMENTO DE DADOS")
@@ -264,7 +264,6 @@ def load_and_preprocess_data(filepath):
     df_trans['Trimestre'] = df['Trimestre']
     
     # Features de lag
-    print("\nAdicionando lags (3, 12 meses) e médias móveis...")
     base_cols = [c for c in df_trans.columns if c not in ['Mes', 'Trimestre']]
     for col in base_cols:
         df_trans[f'{col}_lag3'] = df_trans[col].shift(3)
@@ -297,7 +296,7 @@ def load_and_preprocess_data(filepath):
     print(f"Dimensão final processada: {data.shape}")
     return data
 
-# ============== Treinamento do Ensemble ==============
+# Treinamento do Ensemble
 def train_ensemble(data):
     X = data.drop(columns=['IBC-Br'])
     y = data['IBC-Br']
@@ -372,7 +371,7 @@ def train_ensemble(data):
     return results
 
 
-# ============== Reconstrução de Nível ==============
+# Reconstrução de Nível
 def reconstruct_levels(results):
     """Reconstrói os níveis do índice IBC-Br a partir das variações percentuais."""
     global ORIGINAL_IBC_BR
@@ -402,7 +401,7 @@ def reconstruct_levels(results):
     }, index=results.index[:len(actual_levels)])
 
 
-# ============== Avaliação ==============
+# Avaliação
 def evaluate(results, results_level):
     n_var = len(results)
     n_level = len(results_level)
@@ -428,7 +427,7 @@ def evaluate(results, results_level):
     compare_models(results_level)
 
 
-# ============== Gráficos ==============
+# Gráficos
 def plot_results(results, results_level):
     fig, axes = plt.subplots(2, 1, figsize=(14, 10))
     
@@ -472,11 +471,9 @@ def plot_results(results, results_level):
     plt.savefig(OUTPUT_PLOT_LEVEL, dpi=150)
     print(f"Gráfico de nível salvo em {OUTPUT_PLOT_LEVEL}")
 
-
-# ============== Principal ==============
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    
+    print("USANDO IBC-Br COMO PROXY DO PIB POR ENQUANTO, NÃO ESQUECER")
     data = load_and_preprocess_data(DATA_PATH)
     results = train_ensemble(data)
     results_level = reconstruct_levels(results)
