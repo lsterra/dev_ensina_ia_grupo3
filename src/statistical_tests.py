@@ -81,11 +81,6 @@ def compare_models(results: dict, actual_col: str = 'Actual', models: list = Non
     ensemble = results['Ensemble'].values
     
     e_ensemble = actual - ensemble
-    n = len(actual)
-    
-    print(f"\n{'='*60}")
-    print(f"TESTE DIEBOLD-MARIANO (Ensemble vs Modelos Base) | n={n}")
-    print("="*60)
     
     for model in models:
         if model not in results.columns:
