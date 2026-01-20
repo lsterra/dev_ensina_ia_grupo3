@@ -42,8 +42,6 @@ GB_PARAM_GRID = {
 # Série original do IBC-Br para reconstrução de nível
 ORIGINAL_IBC_BR = None
 
-
-# ============== Otimização Adaptativa de Hiperparâmetros ==============
 # Limiares para comportamento adaptativo baseado no tamanho amostral
 MIN_SAMPLES_FOR_GRIDSEARCH = 120  # Necessário para folds de CV robustos
 MIN_SAMPLES_PER_FOLD = 20         # Mínimo por fold de CV
