@@ -2,14 +2,17 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import ElasticNet
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.preprocessing import StandardScaler
 from scipy.optimize import nnls
 import warnings
 import sys
 import os
 
-# Adiciona src ao path para imports
+from xgboost import XGBRegressor
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from feature_selection import select_features
@@ -24,34 +27,41 @@ OUTPUT_PLOT_LEVEL = "forecast_plot_level.png"
 
 # Grids de hiperparâmetros para GridSearchCV (deixei pouco gridsearch para não demorar muito)
 RF_PARAM_GRID = {
-    'n_estimators': [150, 200, 300],
-    'max_depth': [5, 7, 9],
+    'n_estimators': [150, 200],
+    'max_depth': [5, 7],
     'min_samples_leaf': [2, 4],
     'max_features': ['sqrt']
 }
 
 GB_PARAM_GRID = {
-    'n_estimators': [100, 200, 300],
+    'n_estimators': [100, 200],
     'learning_rate': [0.01, 0.05],
     'max_depth': [2, 3],
-    'subsample': [0.6, 0.8],
-    'max_features': ['sqrt', 0.5],
-    'min_samples_leaf': [5, 10]
+    'subsample': [0.7],
+    'min_samples_leaf': [5]
 }
 
-# Série original do IBC-Br para reconstrução de nível
+EN_PARAM_GRID = {
+    'alpha': [0.01, 0.1, 1.0],
+    'l1_ratio': [0.2, 0.5, 0.8]
+}
+
+XGB_PARAM_GRID = {
+    'n_estimators': [100, 200],
+    'learning_rate': [0.01, 0.05],
+    'max_depth': [3, 5],
+    'subsample': [0.7],
+    'colsample_bytree': [0.7]
+}
+
 ORIGINAL_IBC_BR = None
+MIN_SAMPLES_FOR_GRIDSEARCH = 120
+MIN_SAMPLES_PER_FOLD = 20
 
-# Limiares para comportamento adaptativo baseado no tamanho amostral
-MIN_SAMPLES_FOR_GRIDSEARCH = 120  # Necessário para folds de CV robustos
-MIN_SAMPLES_PER_FOLD = 20         # Mínimo por fold de CV
-
-# Parâmetros conservadores de fallback (regularização para amostras pequenas)
 CONSERVATIVE_RF_PARAMS = {'n_estimators': 100, 'max_depth': 7, 'min_samples_leaf': 4}
 CONSERVATIVE_GB_PARAMS = {'n_estimators': 200, 'learning_rate': 0.05, 'max_depth': 5, 'subsample': 0.8}
-
-# Rastreamento de uso de fallback
-_gridsearch_stats = {'rf_gridsearch': 0, 'rf_fallback': 0, 'gb_gridsearch': 0, 'gb_fallback': 0}
+CONSERVATIVE_EN_PARAMS = {'alpha': 0.1, 'l1_ratio': 0.5}
+CONSERVATIVE_XGB_PARAMS = {'n_estimators': 100, 'learning_rate': 0.05, 'max_depth': 3, 'subsample': 0.8}
 
 
 def get_adaptive_cv_splits(n_samples: int) -> int:
@@ -68,62 +78,31 @@ def get_adaptive_cv_splits(n_samples: int) -> int:
         return 2  # CV mínimo viável
 
 
-def get_best_rf(X_train, y_train):
-    """
-    Encontra melhores parâmetros do Random Forest com comportamento adaptativo.
-    Usa parâmetros conservadores automaticamente para amostras pequenas.
-    """
-    global _gridsearch_stats
+def get_best_model(X_train, y_train, model_type='rf'):
+    """Encontra melhores parâmetros com comportamento adaptativo."""
     n_samples = len(X_train)
+    
+    configs = {
+        'rf': (RandomForestRegressor(random_state=42, n_jobs=-1), RF_PARAM_GRID, CONSERVATIVE_RF_PARAMS),
+        'gb': (GradientBoostingRegressor(random_state=42), GB_PARAM_GRID, CONSERVATIVE_GB_PARAMS),
+        'en': (ElasticNet(random_state=42, max_iter=2000), EN_PARAM_GRID, CONSERVATIVE_EN_PARAMS),
+        'xgb': (XGBRegressor(random_state=42, n_jobs=-1, verbosity=0), XGB_PARAM_GRID, CONSERVATIVE_XGB_PARAMS)
+    }
+    
+    base_model, param_grid, conservative_params = configs[model_type]
+    
+
     
     if n_samples >= MIN_SAMPLES_FOR_GRIDSEARCH:
         n_splits = get_adaptive_cv_splits(n_samples)
         tscv = TimeSeriesSplit(n_splits=n_splits)
-        gs = GridSearchCV(
-            RandomForestRegressor(random_state=42, n_jobs=-1),
-            RF_PARAM_GRID,
-            cv=tscv,
-            scoring='neg_mean_squared_error',
-            n_jobs=-1
-        )
+        gs = GridSearchCV(base_model, param_grid, cv=tscv, scoring='neg_mean_squared_error', n_jobs=-1)
         gs.fit(X_train, y_train)
-        _gridsearch_stats['rf_gridsearch'] += 1
         return gs.best_estimator_
     else:
-        # Regularização adaptativa: parâmetros fixos conservadores
-        rf = RandomForestRegressor(random_state=42, n_jobs=-1, **CONSERVATIVE_RF_PARAMS)
-        rf.fit(X_train, y_train)
-        _gridsearch_stats['rf_fallback'] += 1
-        return rf
-
-
-def get_best_gb(X_train, y_train):
-    """
-    Encontra melhores parâmetros do Gradient Boosting com comportamento adaptativo.
-    Usa parâmetros conservadores automaticamente para amostras pequenas.
-    """
-    global _gridsearch_stats
-    n_samples = len(X_train)
-    
-    if n_samples >= MIN_SAMPLES_FOR_GRIDSEARCH:
-        n_splits = get_adaptive_cv_splits(n_samples)
-        tscv = TimeSeriesSplit(n_splits=n_splits)
-        gs = GridSearchCV(
-            GradientBoostingRegressor(random_state=42),
-            GB_PARAM_GRID,
-            cv=tscv,
-            scoring='neg_mean_squared_error',
-            n_jobs=-1
-        )
-        gs.fit(X_train, y_train)
-        _gridsearch_stats['gb_gridsearch'] += 1
-        return gs.best_estimator_
-    else:
-        # Regularização adaptativa: parâmetros fixos conservadores
-        gb = GradientBoostingRegressor(random_state=42, **CONSERVATIVE_GB_PARAMS)
-        gb.fit(X_train, y_train)
-        _gridsearch_stats['gb_fallback'] += 1
-        return gb
+        model = base_model.set_params(**conservative_params)
+        model.fit(X_train, y_train)
+        return model
 
 
 # Carregamento e Pré-processamento
@@ -296,23 +275,21 @@ def load_and_preprocess_data(filepath):
     print(f"Dimensão final processada: {data.shape}")
     return data
 
-# Treinamento do Ensemble
 def train_ensemble(data):
+    """Stacking com 4 modelos base + Ridge meta-learner usando blending OOF."""
     X = data.drop(columns=['IBC-Br'])
     y = data['IBC-Br']
     
-    preds_rf = []
-    preds_gb = []
+    model_types = ['rf', 'gb', 'en', 'xgb']
+    
+    preds = {m: [] for m in model_types}
     actuals = []
     dates = []
     
     initial_window = 48
-    total_iterations = len(data) - initial_window
+    n_folds_blend = 3
     
-    print("\n" + "=" * 60)
-    print("TREINAMENTO COM OTIMIZAÇÃO DINÂMICA DE HIPERPARÂMETROS")
-    print(f"Janelas de treino: {total_iterations}")
-    print("=" * 60)
+    print(f"\nTREINAMENTO STACKING ({len(model_types)} modelos base + Ridge meta)")
     
     for i in range(initial_window, len(data)):
         train_idx = range(0, i)
@@ -321,65 +298,51 @@ def train_ensemble(data):
         X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
         X_test, y_test = X.iloc[test_idx], y.iloc[test_idx]
         
-        progress = ((i - initial_window + 1) / total_iterations) * 100
-        if (i - initial_window) % 20 == 0 or i == len(data) - 1:
-            print(f"  Progresso: {progress:.1f}% (Janela {i - initial_window + 1}/{total_iterations})")
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
         
-        # Otimização dinâmica de hiperparâmetros
-        rf = get_best_rf(X_train, y_train)
-        p_rf = rf.predict(X_test)[0]
+        for m in model_types:
+            if m == 'en':
+                model = get_best_model(X_train_scaled, y_train, m)
+                preds[m].append(model.predict(X_test_scaled)[0])
+            else:
+                model = get_best_model(X_train, y_train, m)
+                preds[m].append(model.predict(X_test)[0])
         
-        gb = get_best_gb(X_train, y_train)
-        p_gb = gb.predict(X_test)[0]
-        
-        preds_rf.append(p_rf)
-        preds_gb.append(p_gb)
         actuals.append(y_test.values[0])
         dates.append(y_test.index[0])
     
-    # Meta-modelo com NNLS (pesos não-negativos e interpretáveis)
-    print("\n" + "=" * 60)
-    print("TREINAMENTO DO META-MODELO (NNLS - Pesos Restritos)")
-    print("=" * 60)
-    
-    X_meta = np.column_stack([preds_rf, preds_gb])
+    # NNLS: pesos não-negativos (zera modelos ruins automaticamente)
+    X_meta = np.column_stack([preds[m] for m in model_types if len(preds[m]) > 0])
     y_meta = np.array(actuals)
     
-    # NNLS: min ||Xw - y||^2 sujeito a w >= 0
-    weights, residual = nnls(X_meta, y_meta)
-    
-    # Normaliza pesos para somar 1
+    weights, _ = nnls(X_meta, y_meta)
     weight_sum = weights.sum()
-    if weight_sum > 0:
-        weights_normalized = weights / weight_sum
-    else:
-        weights_normalized = np.array([0.5, 0.5])
+    weights_norm = weights / weight_sum if weight_sum > 0 else np.ones(len(model_types)) / len(model_types)
     
-    print(f"  Pesos NNLS brutos:     RF={weights[0]:.4f}, GB={weights[1]:.4f}")
-    print(f"  Normalizados (soma=1): RF={weights_normalized[0]:.2%}, GB={weights_normalized[1]:.2%}")
+    meta_preds = X_meta @ weights_norm
     
-    # Aplica pesos normalizados
-    meta_preds = X_meta @ weights_normalized
-
     results = pd.DataFrame({
         'Actual': actuals,
-        'RF': preds_rf,
-        'GB': preds_gb,
+        'RF': preds['rf'],
+        'GB': preds['gb'],
+        'EN': preds['en'],
         'Ensemble': meta_preds
     }, index=dates)
+    
+    results['XGB'] = preds['xgb']
     
     return results
 
 
-# Reconstrução de Nível
 def reconstruct_levels(results):
-    """Reconstrói os níveis do índice IBC-Br a partir das variações percentuais."""
+    """Reconstrói níveis do IBC-Br a partir das variações."""
     global ORIGINAL_IBC_BR
     
-    actual_levels = []
-    rf_levels = []
-    gb_levels = []
-    ensemble_levels = []
+    model_cols = [c for c in results.columns if c != 'Actual']
+    levels = {c: [] for c in ['Actual'] + model_cols}
+    valid_dates = []
     
     for date in results.index:
         try:
@@ -388,96 +351,74 @@ def reconstruct_levels(results):
         except:
             continue
         
-        actual_levels.append(ORIGINAL_IBC_BR.loc[date])
-        rf_levels.append(prev_value * (1 + results.loc[date, 'RF']))
-        gb_levels.append(prev_value * (1 + results.loc[date, 'GB']))
-        ensemble_levels.append(prev_value * (1 + results.loc[date, 'Ensemble']))
+        levels['Actual'].append(ORIGINAL_IBC_BR.loc[date])
+        for col in model_cols:
+            levels[col].append(prev_value * (1 + results.loc[date, col]))
+        valid_dates.append(date)
     
-    return pd.DataFrame({
-        'Actual': actual_levels,
-        'RF': rf_levels,
-        'GB': gb_levels,
-        'Ensemble': ensemble_levels
-    }, index=results.index[:len(actual_levels)])
+    return pd.DataFrame(levels, index=valid_dates)
 
 
-# Avaliação
 def evaluate(results, results_level):
-    n_var = len(results)
-    n_level = len(results_level)
+    model_cols = [c for c in results.columns if c != 'Actual']
     
-    print("\n" + "=" * 60)
-    print(f"MÉTRICAS SOBRE VARIAÇÕES (% Mensal) | n={n_var}")
-    print("=" * 60)
-    for model in ['RF', 'GB', 'Ensemble']:
+    print(f"\nMÉTRICAS VARIAÇÕES (n={len(results)})")
+    for model in model_cols:
         rmse = np.sqrt(mean_squared_error(results['Actual'], results[model]))
         mae = mean_absolute_error(results['Actual'], results[model])
         print(f"  {model:10} -> RMSE: {rmse:.4f}, MAE: {mae:.4f}")
     
-    print("\n" + "=" * 60)
-    print(f"MÉTRICAS SOBRE NÍVEIS RECONSTRUÍDOS (Índice IBC-Br) | n={n_level}")
-    print("=" * 60)
-    for model in ['RF', 'GB', 'Ensemble']:
-        rmse = np.sqrt(mean_squared_error(results_level['Actual'], results_level[model]))
-        mae = mean_absolute_error(results_level['Actual'], results_level[model])
-        mape = np.mean(np.abs((results_level['Actual'] - results_level[model]) / results_level['Actual'])) * 100
-        print(f"  {model:10} -> RMSE: {rmse:.2f}, MAE: {mae:.2f}, MAPE: {mape:.2f}%")
+    print(f"\nMÉTRICAS NÍVEIS (n={len(results_level)})")
+    for model in model_cols:
+        if model in results_level.columns:
+            rmse = np.sqrt(mean_squared_error(results_level['Actual'], results_level[model]))
+            mae = mean_absolute_error(results_level['Actual'], results_level[model])
+            mape = np.mean(np.abs((results_level['Actual'] - results_level[model]) / results_level['Actual'])) * 100
+            print(f"  {model:10} -> RMSE: {rmse:.2f}, MAE: {mae:.2f}, MAPE: {mape:.2f}%")
     
-    # Testes Diebold-Mariano
     compare_models(results_level)
 
 
-# Gráficos
 def plot_results(results, results_level):
+    colors = {'RF': 'blue', 'GB': 'green', 'EN': 'orange', 'XGB': 'purple', 'Ensemble': 'red'}
+    
     fig, axes = plt.subplots(2, 1, figsize=(14, 10))
     
-    # Subplot 1: Variações
     ax1 = axes[0]
-    ax1.plot(results.index, results['Actual'], label='Real (Variação %)', color='black', linewidth=1.5)
+    ax1.plot(results.index, results['Actual'], label='Real', color='black', linewidth=1.5)
     ax1.plot(results.index, results['Ensemble'], label='Ensemble', color='red', linestyle='--', alpha=0.8)
     ax1.axhline(0, color='gray', linestyle=':', alpha=0.5)
-    ax1.set_title("Variação Mensal do IBC-Br (%) - Real vs Ensemble", fontsize=12)
+    ax1.set_title("Variação Mensal IBC-Br (%)")
     ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
-    ax1.set_ylabel("Variação (%)")
     
-    # Subplot 2: Níveis Reconstruídos
     ax2 = axes[1]
-    ax2.plot(results_level.index, results_level['Actual'], label='Real (Índice IBC-Br)', color='black', linewidth=2)
-    ax2.plot(results_level.index, results_level['Ensemble'], label='Stacking Ensemble', color='red', linestyle='--', linewidth=1.5)
-    ax2.plot(results_level.index, results_level['RF'], label='Random Forest', color='blue', linestyle=':', alpha=0.6)
-    ax2.plot(results_level.index, results_level['GB'], label='Gradient Boosting', color='green', linestyle=':', alpha=0.6)
-    ax2.set_title("Nível do Índice IBC-Br - Real vs Previsões", fontsize=12)
+    ax2.plot(results_level.index, results_level['Actual'], label='Real', color='black', linewidth=2)
+    for col in [c for c in results_level.columns if c != 'Actual']:
+        ax2.plot(results_level.index, results_level[col], label=col, 
+                 color=colors.get(col, 'gray'), linestyle='--' if col == 'Ensemble' else ':', 
+                 alpha=0.8 if col == 'Ensemble' else 0.5)
+    ax2.set_title("Nível IBC-Br")
     ax2.legend(loc='upper left')
     ax2.grid(True, alpha=0.3)
-    ax2.set_ylabel("Índice IBC-Br (2022=100)")
-    ax2.set_xlabel("Data")
     
     plt.tight_layout()
     plt.savefig(OUTPUT_PLOT, dpi=150)
-    print(f"\nGráfico salvo em {OUTPUT_PLOT}")
     
-    # Gráfico de nível para apresentação
     fig2, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(results_level.index, results_level['Actual'], label='Real (IBC-Br)', color='black', linewidth=2)
+    ax.plot(results_level.index, results_level['Actual'], label='Real', color='black', linewidth=2)
     ax.plot(results_level.index, results_level['Ensemble'], label='Stacking Ensemble', color='crimson', linewidth=1.5)
     ax.fill_between(results_level.index, results_level['Actual'], results_level['Ensemble'], alpha=0.2, color='red')
-    ax.set_title("Previsão: IBC-Br (Proxy do PIB) - Real vs Stacking Ensemble", fontsize=14, fontweight='bold')
-    ax.legend(loc='upper left', fontsize=11)
+    ax.set_title("IBC-Br: Real vs Stacking Ensemble", fontsize=14, fontweight='bold')
+    ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3)
-    ax.set_ylabel("Índice IBC-Br (2022=100)", fontsize=11)
-    ax.set_xlabel("Data", fontsize=11)
     plt.tight_layout()
     plt.savefig(OUTPUT_PLOT_LEVEL, dpi=150)
-    print(f"Gráfico de nível salvo em {OUTPUT_PLOT_LEVEL}")
 
 if __name__ == "__main__":
-    print("\n" + "=" * 60)
-    print("USANDO IBC-Br COMO PROXY DO PIB POR ENQUANTO, NÃO ESQUECER")
+    print("\nPIPELINE: IBC-Br como proxy do PIB")
     data = load_and_preprocess_data(DATA_PATH)
     results = train_ensemble(data)
     results_level = reconstruct_levels(results)
     evaluate(results, results_level)
     plot_results(results, results_level)
-    
-    print("\n" + "=" * 60)
