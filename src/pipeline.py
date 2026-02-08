@@ -77,7 +77,6 @@ def get_adaptive_cv_splits(n_samples: int) -> int:
     else:
         return 2  # CV mínimo viável
 
-
 def get_best_model(X_train, y_train, model_type='rf'):
     """Encontra melhores parâmetros com comportamento adaptativo."""
     n_samples = len(X_train)
@@ -91,8 +90,6 @@ def get_best_model(X_train, y_train, model_type='rf'):
     
     base_model, param_grid, conservative_params = configs[model_type]
     
-
-    
     if n_samples >= MIN_SAMPLES_FOR_GRIDSEARCH:
         n_splits = get_adaptive_cv_splits(n_samples)
         tscv = TimeSeriesSplit(n_splits=n_splits)
@@ -103,7 +100,6 @@ def get_best_model(X_train, y_train, model_type='rf'):
         model = base_model.set_params(**conservative_params)
         model.fit(X_train, y_train)
         return model
-
 
 # Carregamento e Pré-processamento
 def load_and_preprocess_data(filepath):
@@ -380,40 +376,90 @@ def evaluate(results, results_level):
 
 
 def plot_results(results, results_level):
-    colors = {'RF': 'blue', 'GB': 'green', 'EN': 'orange', 'XGB': 'purple', 'Ensemble': 'red'}
+    colors = {'RF': '#3498db', 'GB': '#2ecc71', 'EN': '#f39c12', 'XGB': '#9b59b6', 'Ensemble': '#e74c3c'}
+    model_cols = [c for c in results.columns if c != 'Actual']
     
-    fig, axes = plt.subplots(2, 1, figsize=(14, 10))
+    plt.style.use('seaborn-v0_8-whitegrid')
+    plt.rcParams.update({'font.size': 14, 'axes.titlesize': 18, 'axes.labelsize': 14})
     
-    ax1 = axes[0]
-    ax1.plot(results.index, results['Actual'], label='Real', color='black', linewidth=1.5)
-    ax1.plot(results.index, results['Ensemble'], label='Ensemble', color='red', linestyle='--', alpha=0.8)
-    ax1.axhline(0, color='gray', linestyle=':', alpha=0.5)
-    ax1.set_title("Variação Mensal IBC-Br (%)")
-    ax1.legend(loc='upper right')
-    ax1.grid(True, alpha=0.3)
+    metrics = {}
+    for m in model_cols:
+        if m in results_level.columns:
+            metrics[m] = {
+                'RMSE': np.sqrt(mean_squared_error(results_level['Actual'], results_level[m])),
+                'MAE': mean_absolute_error(results_level['Actual'], results_level[m])
+            }
     
-    ax2 = axes[1]
-    ax2.plot(results_level.index, results_level['Actual'], label='Real', color='black', linewidth=2)
-    for col in [c for c in results_level.columns if c != 'Actual']:
-        ax2.plot(results_level.index, results_level[col], label=col, 
-                 color=colors.get(col, 'gray'), linestyle='--' if col == 'Ensemble' else ':', 
-                 alpha=0.8 if col == 'Ensemble' else 0.5)
-    ax2.set_title("Nível IBC-Br")
-    ax2.legend(loc='upper left')
-    ax2.grid(True, alpha=0.3)
-    
+    # Gráfico 1: Real vs Ensemble
+    fig1, ax1 = plt.subplots(figsize=(14, 7))
+    ax1.plot(results_level.index, results_level['Actual'], label='Real', color='#2c3e50', linewidth=3)
+    ax1.plot(results_level.index, results_level['Ensemble'], label='Stacking Ensemble', color=colors['Ensemble'], linewidth=2.5, linestyle='--')
+    ax1.fill_between(results_level.index, results_level['Actual'], results_level['Ensemble'], alpha=0.2, color=colors['Ensemble'])
+    ax1.set_title('Previsão IBC-Br: Real vs Stacking Ensemble', fontweight='bold')
+    ax1.set_xlabel('Data')
+    ax1.set_ylabel('Índice IBC-Br')
+    ax1.legend(loc='upper left', fontsize=12, framealpha=0.95)
+    ax1.tick_params(axis='x', rotation=30)
     plt.tight_layout()
-    plt.savefig(OUTPUT_PLOT, dpi=150)
+    plt.savefig('plot_1_real_vs_ensemble.png', dpi=200, bbox_inches='tight', facecolor='white')
+    plt.close()
     
-    fig2, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(results_level.index, results_level['Actual'], label='Real', color='black', linewidth=2)
-    ax.plot(results_level.index, results_level['Ensemble'], label='Stacking Ensemble', color='crimson', linewidth=1.5)
-    ax.fill_between(results_level.index, results_level['Actual'], results_level['Ensemble'], alpha=0.2, color='red')
-    ax.set_title("IBC-Br: Real vs Stacking Ensemble", fontsize=14, fontweight='bold')
-    ax.legend(loc='upper left')
-    ax.grid(True, alpha=0.3)
+    # Gráfico 2: Barras de métricas
+    fig2, ax2 = plt.subplots(figsize=(12, 7))
+    x = np.arange(len(metrics))
+    width = 0.35
+    rmse_vals = [metrics[m]['RMSE'] for m in metrics]
+    mae_vals = [metrics[m]['MAE'] for m in metrics]
+    
+    bars1 = ax2.bar(x - width/2, rmse_vals, width, label='RMSE', color='#34495e', edgecolor='white', linewidth=1.5)
+    bars2 = ax2.bar(x + width/2, mae_vals, width, label='MAE', color='#95a5a6', edgecolor='white', linewidth=1.5)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(list(metrics.keys()), fontsize=13)
+    ax2.set_title('Comparativo de Métricas por Modelo', fontweight='bold')
+    ax2.set_ylabel('Erro')
+    ax2.legend(fontsize=12)
+    
+    for bar in bars1 + bars2:
+        h = bar.get_height()
+        ax2.annotate(f'{h:.2f}', xy=(bar.get_x() + bar.get_width()/2, h), 
+                     ha='center', va='bottom', fontsize=11, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(OUTPUT_PLOT_LEVEL, dpi=150)
+    plt.savefig('plot_2_metricas.png', dpi=200, bbox_inches='tight', facecolor='white')
+    plt.close()
+    
+    # Gráfico 3: Erro acumulado
+    fig3, ax3 = plt.subplots(figsize=(14, 7))
+    for m in model_cols:
+        if m in results_level.columns:
+            cumulative_error = np.abs(results_level['Actual'] - results_level[m]).cumsum()
+            lw = 3 if m == 'Ensemble' else 2
+            ax3.plot(results_level.index, cumulative_error, label=m, color=colors.get(m, 'gray'), linewidth=lw)
+    ax3.set_title('Erro Absoluto Acumulado ao Longo do Tempo', fontweight='bold')
+    ax3.set_xlabel('Data')
+    ax3.set_ylabel('Erro Acumulado')
+    ax3.legend(loc='upper left', fontsize=12, framealpha=0.95)
+    ax3.tick_params(axis='x', rotation=30)
+    plt.tight_layout()
+    plt.savefig('plot_3_erro_acumulado.png', dpi=200, bbox_inches='tight', facecolor='white')
+    plt.close()
+    
+    # Gráfico 4: Todos os modelos
+    fig4, ax4 = plt.subplots(figsize=(14, 7))
+    ax4.plot(results_level.index, results_level['Actual'], label='Real', color='#2c3e50', linewidth=3)
+    for m in model_cols:
+        if m in results_level.columns:
+            lw = 2.5 if m == 'Ensemble' else 1.5
+            ls = '--' if m == 'Ensemble' else '-'
+            alpha = 1.0 if m == 'Ensemble' else 0.7
+            ax4.plot(results_level.index, results_level[m], label=m, color=colors.get(m, 'gray'), linewidth=lw, linestyle=ls, alpha=alpha)
+    ax4.set_title('Comparativo: Todos os Modelos vs Real', fontweight='bold')
+    ax4.set_xlabel('Data')
+    ax4.set_ylabel('Índice IBC-Br')
+    ax4.legend(loc='upper left', fontsize=11, framealpha=0.95, ncol=2)
+    ax4.tick_params(axis='x', rotation=30)
+    plt.tight_layout()
+    plt.savefig('plot_4_todos_modelos.png', dpi=200, bbox_inches='tight', facecolor='white')
+    plt.close()
 
 if __name__ == "__main__":
     print("\nPIPELINE: IBC-Br como proxy do PIB")

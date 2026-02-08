@@ -5,7 +5,7 @@ import warnings as _warnings
 
 # Limiares adaptativos baseados no tamanho da amostra
 MIN_OBS_ADF_ROBUST = 36   # 3 anos de dados mensais para ADF robusto
-MIN_OBS_ADF_RELAXED = 24  # 2 anos - marginal, usar com cautela
+MIN_OBS_ADF_RELAXED = 24  # 2 anos de dados mensais para evitar remoção de features com poucas observações
 
 
 def test_stationarity(series: pd.Series, alpha: float = 0.05, adaptive: bool = True) -> bool:
