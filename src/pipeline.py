@@ -102,7 +102,7 @@ def get_best_model(X_train, y_train, model_type='rf'):
         return model
 
 # Carregamento e Pré-processamento
-def load_and_preprocess_data(filepath):
+def load_and_preprocess_data(filepath, horizon=1):
     global ORIGINAL_IBC_BR
     print("CARREGAMENTO E PRÉ-PROCESSAMENTO DE DADOS")
 
@@ -249,7 +249,7 @@ def load_and_preprocess_data(filepath):
     
     # Prepara target e features
     target = df_trans['IBC-Br']
-    features = df_trans.drop(columns=['IBC-Br']).shift(1)
+    features = df_trans.drop(columns=['IBC-Br']).shift(horizon)
     
     # Combina e limpa
     data = pd.concat([target, features], axis=1)
@@ -462,9 +462,95 @@ def plot_results(results, results_level):
     plt.close()
 
 if __name__ == "__main__":
-    print("\nPIPELINE: IBC-Br como proxy do PIB")
-    data = load_and_preprocess_data(DATA_PATH)
-    results = train_ensemble(data)
-    results_level = reconstruct_levels(results)
-    evaluate(results, results_level)
-    plot_results(results, results_level)
+    # --- CONFIGURAÇÕES DE EXECUÇÃO ---
+    # Coloque True se quiser treinar os modelos do zero (demora)
+    # Coloque False se quiser apenas gerar gráficos e métricas usando os Excels já salvos (rápido)
+    REPROCESSAR_TUDO = True 
+    
+    horizontes = [1, 3, 6, 12]
+    
+    # Cria pastas para organizar a bagunça
+    PASTA_RESULTADOS = "resultados_excel"
+    PASTA_GRAFICOS = "graficos_finais"
+    os.makedirs(PASTA_RESULTADOS, exist_ok=True)
+    os.makedirs(PASTA_GRAFICOS, exist_ok=True)
+    
+    print(f"\n{'#'*60}")
+    print(f"INICIANDO PIPELINE DE PREVISÃO DO PIB (IBC-Br)")
+    print(f"Modo de Retreino: {'ATIVADO' if REPROCESSAR_TUDO else 'DESATIVADO (Lendo arquivos salvos)'}")
+    print(f"{'#'*60}")
+
+    for h in horizontes:
+        print(f"\n>>> PROCESSANDO HORIZONTE H = {h} MESES")
+        
+        nome_arquivo_excel = os.path.join(PASTA_RESULTADOS, f"resultados_horizonte_{h}m.xlsx")
+        
+        if REPROCESSAR_TUDO:
+            # 1. Carrega e processa (com o lag correto para o horizonte)
+            data = load_and_preprocess_data(DATA_PATH, horizon=h)
+            
+            # 2. Treina os modelos
+            results = train_ensemble(data)
+            
+            # 3. Reconstrói níveis (transforma variação % em índice absoluto)
+            results_level = reconstruct_levels(results)
+            
+            # 4. Gera o Benchmark Naive (Ingênuo)
+            # Lógica: A previsão para daqui H meses é igual ao valor de hoje (H meses atrás no target)
+            naive_preds = []
+            for date in results_level.index:
+                try:
+                    loc = ORIGINAL_IBC_BR.index.get_loc(date)
+                    naive_val = ORIGINAL_IBC_BR.iloc[loc - h]
+                    naive_preds.append(naive_val)
+                except:
+                    naive_preds.append(np.nan)
+            results_level['Naive'] = naive_preds
+            
+            # 5. Salva o Excel na pasta organizada
+            results_level.to_excel(nome_arquivo_excel)
+            print(f"   -> Dados salvos em: {nome_arquivo_excel}")
+            
+        else:
+            # MODO RÁPIDO: Apenas carrega o arquivo existente
+            if os.path.exists(nome_arquivo_excel):
+                print(f"   -> Lendo arquivo existente: {nome_arquivo_excel}")
+                results_level = pd.read_excel(nome_arquivo_excel, index_col=0, parse_dates=True)
+                # Recria o objeto 'results' (variação) apenas para a função evaluate não quebrar
+                # (Isso é uma aproximação, mas para gráficos de nível serve)
+                results = results_level.pct_change().dropna() 
+            else:
+                print(f"   [ERRO] Arquivo {nome_arquivo_excel} não encontrado. Mude REPROCESSAR_TUDO = True.")
+                continue
+
+        # 6. Avalia e Plota (Isso roda sempre, para você ver os números na tela)
+        # O evaluate vai imprimir o RMSE e o Diebold-Mariano
+        print(f"\n--- Métricas para Horizonte {h} ---")
+        # Nota: Passamos results_level para as duas variáveis se estiver no modo leitura, 
+        # mas o evaluate foi feito para lidar com isso nas métricas de nível.
+        evaluate(results, results_level)
+        
+        # Gera os gráficos temporários
+        plot_results(results, results_level)
+        
+        # 7. Move e Renomeia as Imagens para a pasta 'graficos'
+        imagens_padrao = [
+            'plot_1_real_vs_ensemble.png',
+            'plot_2_metricas.png',
+            'plot_3_erro_acumulado.png',
+            'plot_4_todos_modelos.png'
+        ]
+        
+        for img_nome in imagens_padrao:
+            if os.path.exists(img_nome):
+                # Novo nome ex: graficos_finais/plot_1_real_vs_ensemble_h3.png
+                novo_nome = f"{img_nome.replace('.png', '')}_h{h}.png"
+                caminho_destino = os.path.join(PASTA_GRAFICOS, novo_nome)
+                
+                # Move o arquivo (substitui se já existir)
+                if os.path.exists(caminho_destino):
+                    os.remove(caminho_destino)
+                os.rename(img_nome, caminho_destino)
+                
+    print(f"\n{'-'*60}")
+    print(f"CONCLUÍDO! Verifique as pastas '{PASTA_RESULTADOS}' e '{PASTA_GRAFICOS}'")
