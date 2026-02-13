@@ -526,8 +526,6 @@ if __name__ == "__main__":
         # 6. Avalia e Plota (Isso roda sempre, para você ver os números na tela)
         # O evaluate vai imprimir o RMSE e o Diebold-Mariano
         print(f"\n--- Métricas para Horizonte {h} ---")
-        # Nota: Passamos results_level para as duas variáveis se estiver no modo leitura, 
-        # mas o evaluate foi feito para lidar com isso nas métricas de nível.
         evaluate(results, results_level)
         
         # Gera os gráficos temporários
